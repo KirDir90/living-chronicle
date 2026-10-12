@@ -1,3 +1,4 @@
+<link rel="icon" href="data:,">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
   :root{
@@ -753,7 +754,11 @@ function cfPost(path, body){
 function aiTextRaw(prompt, startWith, model){
   if(cfEnabled()){
     return cfPost("/text", { instruction: prompt, startWith: startWith || "", model: model || "" })
-      .then(function(h){ return String((h && (h.text != null ? h.text : h)) || ""); });
+      .then(function(h){
+        var s = String((h && (h.text != null ? h.text : h)) || "");
+        if(!s.trim()) throw new Error("пустой ответ модели");
+        return s;
+      });
   }
   // Вне Perchance плагинов нет: честно бросаем исключение (fetchText покажет экран ошибки),
   // вместо молчаливого ReferenceError по несуществующему root.
@@ -877,10 +882,17 @@ async function genPremise(total){
     + "Разбей историю на 3-5 глав: верни chapters [{title, goal}] — title короткое (2-4 слова, БЕЗ слова «Глава» и без номера), goal — цель главы. Вместе главы покрывают всю историю от завязки до развязки. "
     + "Средневековье обязательно: сословия, ремёсла, вера, дороги, постоялые дворы. Заранее продумай 3–5 НЕОЖИДАННЫХ персонажей истории (не дежурных проводников и торговцев): у каждого свой нрав, говор и тайное намерение — намекни на них в целях глав, но тайны не раскрывай. "
     + "Верни СТРОГО JSON {premise, setting, backstory, chapters}: premise — 2–3 предложения (в гущу каких событий герой попал + чего он хочет, НЕ поручение), setting — название мира, backstory — 2–4 предложения (кто герой, чем жил и как оказался в гуще именно этих событий). ПЕРЕД ОТВЕТОМ ПРОВЕРЬ: 1) основа — ровно та, что выпала в жребии (повтори её про себя); 2) герой НЕ ложно обвинённый (кроме жребия «суд и разбирательство»); 3) герой НЕ курьер. Начни ответ с {.";
-  var r;
-  try{ r = await aiTextRaw(prompt, "{", "llama-70b"); } // завязка — сильной моделью
-  catch(premErr){ console.warn("70b не ответил, завязка через обычную модель:", premErr); r = await aiTextRaw(prompt, "{", ""); }
-  var j = extractJSON(r);
+  var j = null, lastErr = null;
+  for(var pa=0; pa<3 && !j; pa++){
+    var use70 = (pa === 0);
+    try{
+      var pr = await aiTextRaw(prompt, "{", use70 ? "llama-70b" : ""); // первая попытка — сильной моделью
+      var cand = extractJSON(pr);
+      if(!cand || typeof cand.premise !== "string" || !cand.premise.trim()) throw new Error("пустая завязка");
+      j = cand;
+    }catch(premErr){ lastErr = premErr; console.warn("завязка, попытка " + (pa+1) + " не удалась:", premErr); }
+  }
+  if(!j) throw lastErr;
     var ch = [];
     var chRaw = asArray(j.chapters);
     if(chRaw.length){
