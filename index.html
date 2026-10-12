@@ -184,10 +184,10 @@
   .card{ border:3px solid #000; box-shadow:0 6px 0 rgba(0,0,0,.55); }
   #sceneImgWrap{ border:3px solid #000; box-shadow:0 6px 0 rgba(0,0,0,.55); }
   /* картинка и название сцены всегда на виду: блок липнет к верху, текст ниже пролистывается.
-     Картинка компактная (до 30vh), целиком без обрезки: contain вписывает кадр 768x512
-     полностью, масштаб равномерный, поля — фон блока. Ширина — всегда 100% панели. */
+     Картинка компактная (до 30vh) и всегда ландшафтная без пустых полей: cover
+     заполняет блок целиком (квадратный кадр модели кадрируется сверху/снизу). */
   #sceneImgWrap{ position:sticky; top:0; z-index:20; width:100%; height:clamp(150px, 30vh, 300px); aspect-ratio:auto; max-height:none; }
-  #sceneImg{ object-fit:contain; }
+  #sceneImg{ object-fit:cover; object-position:center 35%; }
   h2#sceneTitle{
     position:absolute; left:0; right:0; bottom:0; z-index:2; margin:0;
     padding:26px 14px 10px; background:linear-gradient(transparent, rgba(0,0,0,.78));
@@ -228,6 +228,24 @@
   #err{ font-size:11px; line-height:1.9; border:3px solid #000; box-shadow:3px 3px 0 #000; }
   #customInput, #startScreen input, #startScreen select{ font-size:12px; border:3px solid #000; box-shadow:3px 3px 0 #000; }
   .loadTxt{ font-size:11px; }
+  /* ===== Компактный HUD: мелко, обычным шрифтом ===== */
+  #hudBar{ gap:6px; margin-bottom:8px; }
+  #hudBar .pill{
+    flex:0 1 auto; min-width:0; padding:3px 9px;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+    font-size:12px; line-height:1.5;
+    border-width:2px; box-shadow:2px 2px 0 #000;
+  }
+  #hudBar .pill b{ font-size:13px; font-family:inherit; }
+  #hudBar .pill small{ font-size:10px; font-family:inherit; }
+  #hudBar .hpbar{ height:6px; margin-top:2px; }
+  #invEl{ display:inline-block; max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
+  .fx{ gap:6px; margin-top:8px; }
+  .fx span{
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+    font-size:12px; line-height:1.5; padding:2px 9px;
+    border-width:1px; box-shadow:2px 2px 0 #000;
+  }
   img{ image-rendering:pixelated; }
   #sceneBody::-webkit-scrollbar{ width:10px; }
   #sceneBody::-webkit-scrollbar-track{ background:#0a0d18; }
@@ -367,14 +385,18 @@ var S = null; // state
 
 /* ---------- Внешний AI-бэкенд (Cloudflare, ПРОБНАЯ версия) ----------
    AI_BACKEND = "perchance"  — текст и картинки через плагины (как было);
-   AI_BACKEND = "cloudflare" — через свой воркер (CF_WORKER_URL).
-   Пока воркера нет: стоит "perchance", новый код спит и ни на что не влияет.
-   ОТКАТ пробы: вернуть "perchance" — одна строка.
-   ВАЖНО: сюда вписывается только публичный URL воркера. Никаких токенов
+   AI_BACKEND = "cloudflare" — через свои воркеры (CF_WORKER_URLS).
+   Воркеров можно несколько (разные аккаунты Cloudflare): игра идёт по списку
+   и при ошибке одного (кончились нейроны, 500, сеть) молча переходит
+   к следующему; ответивший последним используется первым.
+   ВАЖНО: сюда вписываются только публичные URL воркеров. Никаких токенов
    и секретов в коде игры (код публичен!) — секреты живут в Cloudflare. */
 var AI_BACKEND = "cloudflare";
-var CF_WORKER_URL = "https://lia-backend.karimdurik1.workers.dev"; // твой воркер (проба)
-var CF_GAME_KEY = "";   // общий ключ из Secrets (необязательно), пока пусто
+var CF_WORKER_URLS = [
+  "https://lia-backend.karimdurik1.workers.dev", // аккаунт 1 (основной)
+  "https://lia-backend.karimdurik2.workers.dev" // аккаунт 2 (запасной)
+];
+var CF_GAME_KEYS = ["", ""]; // общие ключи по аккаунтам (позиция = позиция URL), пока пусто
 
 function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -432,6 +454,7 @@ function updateHUD(){
   $("goldEl").textContent = S.gold;
   S.inventory = asArray(S.inventory).map(function(x){ return String(x).slice(0,28); }).slice(0,6);
   $("invEl").textContent = S.inventory.length ? S.inventory.join(", ") : "пусто";
+  $("invEl").title = S.inventory.length ? S.inventory.join(", ") : "";
   $("timeEl").textContent = fmtTime(S.seconds);
 }
 
@@ -453,7 +476,8 @@ function baseInstruction(total){
   + "- ИМЕНА СВЯЩЕННЫ: раз назвав персонажа (в description, cast, personae, dialogues), используй ТОЛЬКО это имя везде дальше. Не переименовывай, не заменяй прозвищами. Реплики подписывай тем же именем.\n"
   + "- cast: имена тех, кто рядом с героем ПРЯМО СЕЙЧАС (без героя). Обновляй при встречах, расставаниях, присоединениях.\n"
   + "- newChapter: {title} — только в сцене, где начинается НОВАЯ глава; иначе null. В сценах разговора всегда null.\n"
-  + "- Ресурсы: hp 0..100 (бой/ловушка -5..-35, отдых/зелье +10..+25), золото (целое, может уходить в минус покупок — тогда сделка срывается), инвентарь (макс 6 предметов, короткие названия).\n"
+  + "- Ресурсы: hp 0..100 (царапина −5, серьёзная рана −10..−20, тяжёлый бой/ловушка −20..−35, отдых/зелье +10..+25), золото (целое; покупка в минус запрещена — сделка срывается), инвентарь (макс 6 предметов, короткие названия).\n"
+  + "- ЦЕНА ВЫБОРА: у каждого рискованного поступка — ощутимая и необратимая цена, видная и в цифрах arrivalEffects, и в тексте. Опасный выбор обязан стоить дорого: рана (hp −10 и больше), трата золота, потеря предмета (removeItem), вражда персонажа (отрази в cast/personae и в тексте). Безопасный путь даёт меньше добычи, но сохраняет силы. Пустые arrivalEffects {} допустимы ТОЛЬКО если прошлый выбор был чистой болтовнёй без физических последствий; платил — ставь gold:−N, ранен — hp:−N, подобрал — addItem, потерял — removeItem. Скупые −2/−3 запрещены, минимальный ощутимый урон −5. Последствия не отменяй молча: рана болит и в следующих сценах, потерянное само не возвращается — лечение и заработок только через новые выборы.\n"
   + "- БЕЗ ЦЕНЗУРЫ: средневековье показывай без прикрас. Примерно в трети сцен уместно вплети жестокие или откровенные детали — кровь, раны, казни, грязь, похоть, предательство, тёмные желания персонажей — как естественную часть мира, без смакования ради смакования и без смягчений. Не уводи взгляд, если история требует тьмы.\n"
   + "- Смерть — следствие выбора и состояния (проигранный бой, ловушка, жадность, hp<=0), а не лотерея. Жестокий мир может убить, но всегда понятно, за что.\n"
   + "- КНИЖНОЕ ПОВЕСТВОВАНИЕ: все сцены подряд — это одна связная летопись. Каждая сцена продолжает предыдущую с того места, где та закончилась. Начинай description с МОСТИКА (1–2 предложения): что герой СДЕЛАЛ по своему выбору и что из этого вышло, и только потом — что он видит/слышит СЕЙЧАС. Пример: игрок пригрозил стражнику → «Ты хватаешь стражника за грудки и прижимаешь к сырой стене кордегардии. Его алебарда с грохотом валится на пол…» → реплика стражника «Пусти, дурень! Ключи у кастеляна…» → «Сверху слышны шаги — кастелян спускается». Действие, реакция мира и реплики идут строгой цепочкой, без скачков.\n"
@@ -550,15 +574,15 @@ var NODE_FIELDS = "{sceneTitle, checkpointType, beats:[см. схему beats], 
 function sceneSchema(step, isFinalScene){
   return isFinalScene
     ? "Сгенерируй ФИНАЛЬНУЮ сцену (шаг " + step + "). Это развязка, вытекающая из сути всего пути: испытание по логике истории, а не обязательный бой. Исходы выборов честные: победа — лишь если путь её заслужил, иначе цена или гибель. Тёмная история вправе кончиться трагедией. " + BEATS_SPEC + " Первый narr — мостик: чем закончился прошлый выбор и как герой оказался здесь, затем развязка. Ничего из дословного текста пути не повторяй — только новое. arrivalEffects — то, что случается СРАЗУ по прибытии (обычно пусто/малый урон). Поля JSON: " + NODE_FIELDS + ". stay:false. ending ставь 'death' только если герой приходит умирающим. Начни ответ с {."
-    : "Сгенерируй НОВУЮ сцену (НЕ обязательно новое место: если история — осада, суд, тайна или заговор в одном месте, оставайся там и двигай СОБЫТИЯ; смена места — только когда её требует событие. Пустые переходы «пошёл дальше по тропе» запрещены). Тип сцены и checkpointType выбери сам по логике истории — любые: от пира до казни, от ярмарки до засады, от исповеди до поножовщины, от допроса до пожара. " + BEATS_SPEC + " Первый narr — МОСТИК: что герой СДЕЛАЛ по прошлому выбору и чем это кончилось (пригрозил — покажи реакцию; попрощался — покажи расставание; ударил — покажи удар), затем развитие событий. Ничего из дословного текста пути не повторяй — только продолжение, реплики только новые. arrivalEffects — что случается СРАЗУ по прибытии как последствие ПРОШЛОГО выбора (урон/золото/предмет). Поля JSON: " + NODE_FIELDS + ". stay:false. Средневековье без прикрас: поведение и речь — по эпохе, жестокость и откровенность — где уместны. newChapter — только если эта сцена открывает новую главу плана, иначе null. ending почти всегда null (смерть — только если прошлый выбор был фатальным). Начни ответ с {.";
+    : "Сгенерируй НОВУЮ сцену (НЕ обязательно новое место: если история — осада, суд, тайна или заговор в одном месте, оставайся там и двигай СОБЫТИЯ; смена места — только когда её требует событие. Пустые переходы «пошёл дальше по тропе» запрещены). Тип сцены и checkpointType выбери сам по логике истории — любые: от пира до казни, от ярмарки до засады, от исповеди до поножовщины, от допроса до пожара. " + BEATS_SPEC + " Первый narr — МОСТИК: что герой СДЕЛАЛ по прошлому выбору и чем это кончилось (пригрозил — покажи реакцию; попрощался — покажи расставание; ударил — покажи удар), затем развитие событий. Ничего из дословного текста пути не повторяй — только продолжение, реплики только новые. arrivalEffects — что случается СРАЗУ по прибытии как последствие ПРОШЛОГО выбора: ОБЯЗАТЕЛЬНО ненулевые цифры, если прошлый выбор имел цену (рана, трата, находка, потеря); пусто — только если прошлое действие было словами без последствий. Поля JSON: " + NODE_FIELDS + ". stay:false. Средневековье без прикрас: поведение и речь — по эпохе, жестокость и откровенность — где уместны. newChapter — только если эта сцена открывает новую главу плана, иначе null. ending почти всегда null (смерть — только если прошлый выбор был фатальным). Начни ответ с {.";
 }
 
 function talkSchema(choiceText){
-  return "Игрок остаётся НА МЕСТЕ и говорит (или осматривается): «"+choiceText+"». НЕ меняй локацию, НЕ двигай сюжет вперёд — только разговор здесь и сейчас. " + BEATS_SPEC + " Цепочка: первый narr — что герой сделал/сказал и как мир отреагировал (передал монеты — собеседник их пересчитал; спросил — тот нахмурился), затем только НОВЫЕ реплики-ответы, уже сказанное не повторяй. У КАЖДОЙ реплики обязательно оба поля, speaker — имя говорящего, line — текст; имена — только уже заявленные. Реплики звучат по-средневековому, каждый говорит в своей манере. choices (3–5 [{text,stay}]): новые вопросы и реплики со stay:true + обязательно 1–2 варианта попрощаться, уйти или продолжить путь со stay:false. arrivalEffects (только мелочь), atmosphere, cast (текущий состав), personae (для каждого собеседника: who — кто он, trait — характер парой слов, secret — его тайное намерение, speech — манера речи), stay:true, newChapter:null, ending:null (или 'death' лишь по веской причине). Всегда включай sceneChanged (true — вид изменился: пришли, встретили, внешность/окружение изменились; false — обычный разговор без внешних изменений) и imagePrompt (при true — свежий вид нового места/лиц). Начни ответ с {.";
+  return "Игрок остаётся НА МЕСТЕ и говорит (или осматривается): «"+choiceText+"». НЕ меняй локацию, НЕ двигай сюжет вперёд — только разговор здесь и сейчас. " + BEATS_SPEC + " Цепочка: первый narr — что герой сделал/сказал и как мир отреагировал (передал монеты — собеседник их пересчитал; спросил — тот нахмурился), затем только НОВЫЕ реплики-ответы, уже сказанное не повторяй. У КАЖДОЙ реплики обязательно оба поля, speaker — имя говорящего, line — текст; имена — только уже заявленные. Реплики звучат по-средневековому, каждый говорит в своей манере. choices (3–5 [{text,stay}]): новые вопросы и реплики со stay:true + обязательно 1–2 варианта попрощаться, уйти или продолжить путь со stay:false. arrivalEffects (мелочь, но если герой платил, дарил или получал предмет — покажи цифрами), atmosphere, cast (текущий состав), personae (для каждого собеседника: who — кто он, trait — характер парой слов, secret — его тайное намерение, speech — манера речи), stay:true, newChapter:null, ending:null (или 'death' лишь по веской причине). Всегда включай sceneChanged (true — вид изменился: пришли, встретили, внешность/окружение изменились; false — обычный разговор без внешних изменений) и imagePrompt (при true — свежий вид нового места/лиц). Начни ответ с {.";
 }
 
 function advanceSchema(choiceText, nextStep, isFinalScene){
-  return "Игрок делает: «"+choiceText+"». Если это разговор или осмотр на месте — верни stay:true и ту же локацию (схема как для разговора: beats цепочкой реакция→новые реплики, мелочь в arrivalEffects, newChapter:null). Иначе — новая сцена, текущий шаг "+nextStep+". Первый narr в beats — мостик: что герой СДЕЛАЛ между сценами по своему выбору и чем это кончилось (если уходил из разговора — чем он закончился, одной фразой; если платил — как приняли плату); дальше — новое место. Старое не пересказывай, старые реплики не повторяй. " + sceneSchema(nextStep, isFinalScene);
+  return "Игрок делает: «"+choiceText+"». Если это разговор или осмотр на месте — верни stay:true и ту же локацию (схема как для разговора: beats цепочкой реакция→новые реплики, мелочь в arrivalEffects, newChapter:null). Иначе — новая сцена, текущий шаг "+nextStep+". Первый narr в beats — мостик: что герой СДЕЛАЛ между сценами по своему выбору и чем это кончилось (если уходил из разговора — чем он закончился, одной фразой; если платил — как приняли плату); дальше — новое место. Старое не пересказывай, старые реплики не повторяй. Рискованный выбор ОБЯЗАН иметь цену: покажи её и в мостике текстом, и в arrivalEffects цифрами; тихий выбор даёт меньше, но безопасен. " + sceneSchema(nextStep, isFinalScene);
 }
 
 function finaleSchema(choiceText){
@@ -677,47 +701,79 @@ function validNode(j){
   if(!j || typeof j !== "object" || Array.isArray(j)) return false;
   return (j.beats != null || j.dialogues != null || j.description != null || j.sceneTitle != null || j.choices != null);
 }
-// POST к воркеру. Бросает исключение при любой проблеме — вызыватели сами
-// решают, откатываться ли на плагин Perchance.
+// Список воркеров (пустые строки пропускаем). Понимает и старый одиночный
+// CF_WORKER_URL — на случай, если файл обновили, а конфиг остался прежним.
+function cfUrls(){
+  var list = [];
+  function add(u){
+    u = String(u == null ? "" : u).replace(/\/+$/, "");
+    if(u) list.push(u);
+  }
+  if(typeof CF_WORKER_URLS !== "undefined" && CF_WORKER_URLS) for(var i=0;i<CF_WORKER_URLS.length;i++) add(CF_WORKER_URLS[i]);
+  if(!list.length && typeof CF_WORKER_URL !== "undefined") add(CF_WORKER_URL);
+  return list;
+}
+var cfLiveIdx = 0; // воркер, ответивший последним, — его пробуем первым
+function cfEnabled(){
+  return AI_BACKEND === "cloudflare" && cfUrls().length > 0;
+}
+// POST к воркерам по очереди: упал один — идём к следующему.
+// Бросает исключение, только если не ответил НИ ОДИН.
 function cfPost(path, body){
-  var headers = { "Content-Type": "application/json" };
-  if(CF_GAME_KEY) headers["X-Game-Key"] = CF_GAME_KEY;
-  return fetch(CF_WORKER_URL.replace(/\/+$/, "") + path, {
-    method: "POST", headers: headers, body: JSON.stringify(body)
-  }).then(function(resp){
-    if(!resp.ok) throw new Error("worker " + resp.status);
-    return resp.json();
-  });
+  var urls = cfUrls();
+  if(!urls.length) return Promise.reject(new Error("нет URL воркера: заполни CF_WORKER_URLS"));
+  if(cfLiveIdx >= urls.length) cfLiveIdx = 0;
+  var failed = null;
+  for(var k=0;k<urls.length;k++){
+    (function(idx){
+      function attempt(){
+        var headers = { "Content-Type": "application/json" };
+        var key = (typeof CF_GAME_KEYS !== "undefined" && CF_GAME_KEYS) ? CF_GAME_KEYS[idx] : "";
+        if(key) headers["X-Game-Key"] = key;
+        return fetch(urls[idx] + path, {
+          method: "POST", headers: headers, body: JSON.stringify(body)
+        }).then(function(resp){
+          if(!resp.ok) throw new Error("worker " + resp.status);
+          return resp.json();
+        }).then(function(data){
+          cfLiveIdx = idx; // этот живой — в следующий раз начнём с него
+          return data;
+        });
+      }
+      failed = failed ? failed.then(null, attempt) : attempt();
+    })((cfLiveIdx + k) % urls.length);
+  }
+  return failed;
 }
 // Единая точка генерации текста: воркер (если включён и задан URL) или плагин.
 // Возвращает Promise<string|{text}> — как root.generateText, есть .then;
 // .stop() нет, но все вызыватели проверяют его наличие перед вызовом.
-function aiTextRaw(prompt, startWith){
-  if(AI_BACKEND === "cloudflare" && CF_WORKER_URL){
-    return cfPost("/text", { instruction: prompt, startWith: startWith || "" })
+function aiTextRaw(prompt, startWith, model){
+  if(cfEnabled()){
+    return cfPost("/text", { instruction: prompt, startWith: startWith || "", model: model || "" })
       .then(function(h){ return String((h && (h.text != null ? h.text : h)) || ""); });
   }
   // Вне Perchance плагинов нет: честно бросаем исключение (fetchText покажет экран ошибки),
   // вместо молчаливого ReferenceError по несуществующему root.
   if(typeof root === "undefined" || !root || !root.generateText)
-    throw new Error("нет AI-бэкенда: вне Perchance нужен cloudflare + CF_WORKER_URL");
+    throw new Error("нет AI-бэкенда: вне Perchance нужен cloudflare + CF_WORKER_URLS");
   return root.generateText({ instruction: prompt, startWith: startWith || "{" });
 }
 // Единая точка генерации картинки: воркер или null (тогда вызыватель идёт в плагин).
 async function aiImageUrl(prompt){
-  if(AI_BACKEND !== "cloudflare" || !CF_WORKER_URL) return null;
+  if(!cfEnabled()) return null;
   try{
     var h = await cfPost("/image", { prompt: prompt });
     if(h && typeof h.dataUrl === "string" && h.dataUrl.indexOf("data:") === 0) return h.dataUrl;
   }catch(cfImgErr){ console.warn("cloudflare-картинка не удалась, откат на плагин:", cfImgErr); }
   return null;
 }
-async function fetchText(prompt){
+async function fetchText(prompt, model){
   var lastErr = null;
   for(var a=0; a<3; a++){
     try{
       var p = (a === 0) ? prompt : prompt + "\nВерни ТОЛЬКО JSON-объект, без единого слова вокруг.";
-      var r = await aiTextRaw(p, "{");
+      var r = await aiTextRaw(p, "{", model);
       var j = extractJSON(r);
       if(!validNode(j)) throw new Error("пустой узел сцены");
       return j;
@@ -726,8 +782,8 @@ async function fetchText(prompt){
   throw lastErr;
 }
 
-async function callGM(task, step, isFinal){
-  return fetchText(buildPrompt(task + " " + sceneSchema(step||S.step, isFinal), step));
+async function callGM(task, step, isFinal, model){
+  return fetchText(buildPrompt(task + " " + sceneSchema(step||S.step, isFinal), step), model);
 }
 
 function choiceTextOf(c){ return (c && typeof c === "object") ? String(c.text) : String(c); }
@@ -753,7 +809,9 @@ function startSpeculation(){
   var runId = S.runId;
   var willFinale = (S.forceEnd || S.step >= S.totalSteps);
   var nextStep = S.step + 1;
-  S.spec = asArray(S.node.choices).slice(0,5).map(function(c){
+  // Спекуляция — только 2 первых выбора: каждый фоновый запрос жрёт дневные нейроны,
+  // остальные догенерируются по факту клика без потери скорости для игрока.
+  S.spec = asArray(S.node.choices).slice(0,2).map(function(c){
     var txt = choiceTextOf(c).slice(0,140);
     var stay = choiceStayOf(c);
     var entry = { choice: txt, stay: stay, result: null, error: null, promise: null, finale: willFinale };
@@ -763,7 +821,7 @@ function startSpeculation(){
         ? buildPrompt(talkSchema(txt), S.step, txt)
         : buildPrompt(advanceSchema(txt, nextStep, nextStep>=S.totalSteps), nextStep, txt));
     try{
-      var p = aiTextRaw(prompt, "{");
+      var p = aiTextRaw(prompt, "{", willFinale ? "llama-70b" : "");
       entry.promise = p;
       p.then(function(r){
         if(!S || S.runId !== runId) return;
@@ -817,7 +875,9 @@ async function genPremise(total){
     + "Разбей историю на 3-5 глав: верни chapters [{title, goal}] — title короткое (2-4 слова, БЕЗ слова «Глава» и без номера), goal — цель главы. Вместе главы покрывают всю историю от завязки до развязки. "
     + "Средневековье обязательно: сословия, ремёсла, вера, дороги, постоялые дворы. Заранее продумай 3–5 НЕОЖИДАННЫХ персонажей истории (не дежурных проводников и торговцев): у каждого свой нрав, говор и тайное намерение — намекни на них в целях глав, но тайны не раскрывай. "
     + "Верни СТРОГО JSON {premise, setting, backstory, chapters}: premise — 2–3 предложения (в гущу каких событий герой попал + чего он хочет, НЕ поручение), setting — название мира, backstory — 2–4 предложения (кто герой, чем жил и как оказался в гуще именно этих событий). ПЕРЕД ОТВЕТОМ ПРОВЕРЬ: 1) основа — ровно та, что выпала в жребии (повтори её про себя); 2) герой НЕ ложно обвинённый (кроме жребия «суд и разбирательство»); 3) герой НЕ курьер. Начни ответ с {.";
-  var r = await aiTextRaw(prompt, "{");
+  var r;
+  try{ r = await aiTextRaw(prompt, "{", "llama-70b"); } // завязка — сильной моделью
+  catch(premErr){ console.warn("70b не ответил, завязка через обычную модель:", premErr); r = await aiTextRaw(prompt, "{", ""); }
   var j = extractJSON(r);
     var ch = [];
     var chRaw = asArray(j.chapters);
@@ -911,7 +971,7 @@ async function showImage(imagePrompt, onReady){
   var url = null;
   var neg = "photorealistic, photograph, 3d render, blurry, low quality, text, watermark, distorted, ugly, top-down view, aerial view, bird's eye view, isometric, high angle, low angle, third person, over-the-shoulder, hero visible, portrait";
   var variants = [
-    imagePrompt + ", detailed pixel art, 16-bit retro rpg style, visible pixels, limited palette, strict eye-level first-person view, camera exactly at hero eye height, horizontal view, no high angle, no low angle, hero not visible, no text, no watermark",
+    imagePrompt + ", wide 16:9 landscape composition, horizon centered, detailed pixel art, 16-bit retro rpg style, visible pixels, limited palette, strict eye-level first-person view, camera exactly at hero eye height, horizontal view, no high angle, no low angle, hero not visible, no text, no watermark",
     "pixel art 16-bit retro rpg scene, strict eye-level first-person view, camera at eye height, " + (S.setting || "fantasy tavern street")
   ];
   for(var vi=0; vi<variants.length && !url; vi++){
@@ -1513,7 +1573,8 @@ async function resolveFinale(choiceText){
       var r = await entry.promise;
       node = entry.result || extractJSON(r);
     } else {
-      node = await fetchText(buildPrompt(finaleSchema(choiceText), S.step + 1, choiceText));
+      try{ node = await fetchText(buildPrompt(finaleSchema(choiceText), S.step + 1, choiceText), "llama-70b"); } // развязка — сильной моделью
+      catch(finErr){ console.warn("70b не ответил, финал через обычную модель:", finErr); node = await fetchText(buildPrompt(finaleSchema(choiceText), S.step + 1, choiceText), ""); }
     }
       try{ await Promise.race([proofreadNode(node), delay(2000)]); }catch(prErr4){}
       if(!S || S.over) return;
